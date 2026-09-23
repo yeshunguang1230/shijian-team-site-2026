@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>史鉴团队网站</title>
+<style>body{margin:0;background:#f3f7f5;color:#17252d;font:14px/1.5 "Microsoft YaHei",Arial,sans-serif}.top{height:70px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;background:#173d53;color:white;box-sizing:border-box}.brand{font-size:20px;font-weight:800}.brand small{font-size:11px;font-weight:400;color:#b7ced0;margin-left:8px}.nav{display:flex;gap:8px}.nav button{border:0;border-radius:8px;padding:9px 13px;background:#ffffff18;color:#dbe9e7;cursor:pointer}.nav button.active{background:#2b907c;color:white;font-weight:800}.main{height:calc(100vh - 70px);padding:16px;box-sizing:border-box}.frame{width:100%;height:100%;border:1px solid #d9e4e3;border-radius:14px;background:white;box-shadow:0 14px 42px #173c5214}.note{position:fixed;right:20px;bottom:16px;background:#173d53;color:#dceceb;border-radius:8px;padding:8px 12px;font-size:11px;opacity:.9}@media(max-width:600px){.top{padding:0 12px}.brand{font-size:16px}.brand small{display:none}.nav button{padding:8px 9px;font-size:12px}.main{padding:8px}.note{display:none}}</style>
+</head>
+<body>
+<header class="top"><div class="brand">史鉴 <small>历史学习智能体团队网站</small></div><nav class="nav"><button class="active" data-page="agent">历史智能体</button><button data-page="feedback">团队建议中心</button><button data-page="readme">使用说明</button></nav></header>
+<main class="main"><iframe id="frame" class="frame" src="史鉴智能体.html" title="史鉴历史学习智能体"></iframe></main><div class="note">统一入口 · 建议和版本由服务器同步</div>
+<script>(()=>{const frame=document.querySelector('#frame');document.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-page]').forEach(x=>x.classList.toggle('active',x===b));frame.src=b.dataset.page==='agent'?'史鉴智能体.html':b.dataset.page==='feedback'?'史鉴建议中心.html':'史鉴使用说明.html'})})();</script>
+</body></html>
+
