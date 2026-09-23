@@ -1,0 +1,6 @@
+史鉴团队网站公网部署包
+
+启动命令：python 史鉴统一网站_server.py
+
+公网环境变量：SHIJIAN_ADMIN_TOKEN=请设置强随机令牌
+可选持久化目录：SHIJIAN_DATA_DIR=/var/data

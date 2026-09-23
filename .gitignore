@@ -1,0 +1,6 @@
+史鉴云端.db
+*.db
+*.sqlite
+*.sqlite3
+*.log
+__pycache__/
