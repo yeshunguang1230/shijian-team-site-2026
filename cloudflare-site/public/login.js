@@ -1,0 +1,14 @@
+import {api,whoAmI,$,message} from './site.js';
+const requestedNext=new URLSearchParams(location.search).get('next')||'';
+const nextPage=/^\/?admin(?:\.html)?(?:#(?:overview|sources|feedback|members|settings))?$/.test(requestedNext)?requestedNext.replace(/^\//,''):'admin.html';
+$('#signedInSection a').href=nextPage;
+let lastPassword='';
+function show(section){$('#loadingAuth').hidden=true;for(const id of ['loginSection','passwordSection','signedInSection'])$('#'+id).hidden=id!==section}
+function showUser(user){if(!user){show('loginSection');return}if(user.mustChangePassword){showPassword(true);return}if(requestedNext){location.replace(nextPage);return}$('#signedInName').textContent=`你好，${user.displayName||user.username}`;show('signedInSection')}
+function showPassword(required=false){show('passwordSection');$('#passwordIntro').textContent=required?'首次登录后，请先更换初始密码，再进入工作区。':'更换密码后，会更新当前登录会话。';$('#passwordForm').elements.currentPassword.value=lastPassword}
+async function submit(form,fn){const button=form.querySelector('button[type="submit"]');button.disabled=true;try{await fn()}finally{button.disabled=false}}
+$('#loginForm').addEventListener('submit',event=>{event.preventDefault();const form=event.currentTarget;submit(form,async()=>{const username=form.elements.username.value.trim();lastPassword=form.elements.password.value;message($('#loginMessage'),'正在登录…');try{const data=await api('/api/auth/login',{method:'POST',body:JSON.stringify({username,password:lastPassword})});form.elements.password.value='';message($('#loginMessage'),'');showUser(data.user);if(data.user&&!data.user.mustChangePassword)location.replace(nextPage)}catch(error){lastPassword='';message($('#loginMessage'),error.message,true)}})});
+$('#passwordForm').addEventListener('submit',event=>{event.preventDefault();const form=event.currentTarget;submit(form,async()=>{const currentPassword=form.elements.currentPassword.value;const newPassword=form.elements.newPassword.value;if(newPassword!==form.elements.confirmPassword.value){message($('#passwordMessage'),'两次新密码不一致，请重新输入。',true);return}if(newPassword===currentPassword){message($('#passwordMessage'),'新密码需要与当前密码不同。',true);return}try{message($('#passwordMessage'),'正在保存…');await api('/api/auth/password',{method:'POST',body:JSON.stringify({currentPassword,newPassword})});lastPassword='';form.reset();location.replace(nextPage)}catch(error){message($('#passwordMessage'),error.message,true)}})});
+async function logout(){try{await api('/api/auth/logout',{method:'POST',body:'{}'});lastPassword='';$('#passwordForm').reset();show('loginSection')}catch(error){message($('#passwordSection').hidden?$('#sessionMessage'):$('#passwordMessage'),error.message,true)}}
+$('#logout').onclick=logout;$('#passwordLogout').onclick=logout;$('#showChangePassword').onclick=()=>showPassword(false);
+whoAmI().then(showUser).catch(()=>{show('loginSection');message($('#loginMessage'),'暂时未能检查登录状态，请尝试登录。',true)});
