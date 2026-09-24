@@ -7,6 +7,7 @@
  */
 
 import { ApiError, getSession, handleAuth, publicUser, requireDeveloper, verifyOrigin } from './auth.js';
+import { fetchAiResponse, outputTokenBudget } from './ai-transport.js';
 
 const DEFAULT_PROMPT =
   '你是史鉴历史学习智能体。只使用给定 SOURCES。把关键结论标成事实、推断或争议；每个事实 claim 必须带 source_ids。资料不足时明确写资料不足，禁止虚构引用。只返回 JSON。';
@@ -20,8 +21,6 @@ const AI_MAX_TEXT = 20000;
 const AI_MAX_TOTAL = 120000;
 const AI_WINDOW_SECONDS = 300;
 const AI_MAX_REQUESTS_PER_WINDOW = 20;
-const AI_UPSTREAM_TIMEOUT_MS = 25000;
-const AI_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const SOURCE_FIELDS = ['id', 'title', 'author', 'date', 'reliability', 'period', 'locator', 'content', 'visibility'];
 const FEEDBACK_FIELDS = ['id', 'category', 'priority', 'title', 'targetVersion', 'scenario', 'current', 'desired', 'evidence', 'acceptance', 'notes', 'status', 'owner', 'retest'];
 const SETTINGS_COLUMNS = 'system_prompt,version,revision,updated_at,updated_by';
@@ -367,38 +366,23 @@ async function handleApi(request, env, path) {
     // team's server-controlled system rules with a prompt-injection message.
     const data = {
       model: envText(env, 'SHIJIAN_MODEL'),
-      messages: [{ role: 'system', content: systemPrompt }, ...clientMessages]
+      messages: [{ role: 'system', content: systemPrompt }, ...clientMessages],
+      max_tokens: outputTokenBudget(original.max_tokens)
     };
-    for (const key of ['temperature', 'top_p', 'max_tokens', 'response_format']) if (key in original) data[key] = original[key];
+    for (const key of ['temperature', 'top_p', 'response_format']) if (key in original) data[key] = original[key];
     const base = envText(env, 'SHIJIAN_BASE_URL').replace(/\/$/, '');
     const target = base.endsWith('/chat/completions') ? base : `${base}/chat/completions`;
     let parsed;
     try { parsed = new URL(target); } catch { throw new ApiError('AI 服务配置异常，请联系项目负责人', 503); }
     if (parsed.protocol !== 'https:' || !parsed.hostname) throw new ApiError('AI 服务需要配置安全的 HTTPS 地址', 503);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), AI_UPSTREAM_TIMEOUT_MS);
-    let upstream;
-    try {
-      upstream = await fetch(parsed, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${envText(env, 'SHIJIAN_API_KEY')}` },
-        body: JSON.stringify(data),
-        signal: controller.signal
-      });
-    } catch (error) {
-      if (error?.name === 'AbortError') throw new ApiError('AI 服务响应超时，请稍后重试', 504);
-      throw new ApiError('暂时无法连接 AI 服务，请稍后重试', 502);
-    } finally {
-      clearTimeout(timeout);
-    }
-    const declaredLength = Number(upstream.headers.get('Content-Length') || 0);
-    if (!upstream.ok) return errorResponse('AI 服务暂时无法完成请求，请稍后重试或联系项目负责人', 502, request, env);
-    if (declaredLength > AI_MAX_RESPONSE_BYTES) throw new ApiError('AI 服务响应过大，请缩短问题', 502);
-    const output = await upstream.arrayBuffer();
-    if (output.byteLength > AI_MAX_RESPONSE_BYTES) throw new ApiError('AI 服务响应过大，请缩短问题', 502);
+    const { output, status: upstreamStatus } = await fetchAiResponse(parsed, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${envText(env, 'SHIJIAN_API_KEY')}` },
+      body: JSON.stringify(data)
+    });
     const headers = secureHeaders(new Headers({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }));
     addCors(headers, request, env);
-    return new Response(output, { status: upstream.status, headers });
+    return new Response(output, { status: upstreamStatus, headers });
   }
   return errorResponse('unknown endpoint', 404, request, env);
 }

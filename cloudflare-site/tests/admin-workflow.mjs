@@ -6,6 +6,7 @@ import vm from 'node:vm';
 // successful write. No production account, document or database is involved.
 const source = await readFile(new URL('../public/admin.js', import.meta.url), 'utf8');
 const draftSource = await readFile(new URL('../public/workspace-draft.js', import.meta.url), 'utf8');
+const exportSource = await readFile(new URL('../public/feedback-export.js', import.meta.url), 'utf8');
 const member = { id: 'test-member', displayName: '测试成员', username: 'tester', role: 'developer' };
 const fieldNames = ['title', 'author', 'date', 'period', 'locator', 'content', 'reliability'];
 
@@ -30,6 +31,7 @@ async function harness({storageMap=new Map(),delaySettings=false}={}) {
       querySelector() { return element(selector + ' button'); },
       add(option) { this.options.push(option); },
       click() { return this.onclick?.(); },
+      focus() {},select() {},
       setAttribute(name,value) { this[name]=value; },
       reset() { for (const item of Object.values(this.elements || {})) item.value = ''; },
     });
@@ -110,6 +112,8 @@ async function harness({storageMap=new Map(),delaySettings=false}={}) {
   await importer.evaluate();
   const draftModule=new vm.SourceTextModule(draftSource,{context});
   await draftModule.link(()=>{});
+  const exportModule=new vm.SourceTextModule(exportSource,{context});
+  await exportModule.link(()=>{});
   const module = new vm.SourceTextModule(source, {
     context,
     importModuleDynamically: async specifier => {
@@ -119,6 +123,7 @@ async function harness({storageMap=new Map(),delaySettings=false}={}) {
   });
   await module.link(specifier => {
     if(specifier==='./workspace-draft.js')return draftModule;
+    if(specifier==='./feedback-export.js')return exportModule;
     assert.equal(specifier, './site.js');
     return site;
   });
@@ -138,6 +143,23 @@ async function harness({storageMap=new Map(),delaySettings=false}={}) {
       return { complete(text) { importResolve(text); return operation; } };
     },
   };
+}
+
+{
+  const h=await harness();
+  h.feedback.set('F-visible',{id:'F-visible',revision:4,title:'保留多行证据',status:'开发中',author:'测试成员',evidence:'第一行\n第二行',acceptance:'能核对来源'});
+  h.feedback.set('F-hidden',{id:'F-hidden',revision:1,title:'其他筛选的建议',status:'新建'});
+  h.element('#feedbackFilter').value='开发中';await h.open('feedback');
+  await h.element('#copyFeedback').onclick();
+  const summary=h.element('#feedbackExportText').value;
+  assert.match(summary,/F-visible/);assert.match(summary,/记录版本（revision）：4/);
+  assert.match(summary,/第一行\n第二行/);assert.match(summary,/能核对来源/);
+  assert.doesNotMatch(summary,/F-hidden|其他筛选的建议/);
+  assert.equal(h.element('#feedbackExportPanel').hidden,false,'Copy denial should expose selectable complete text');
+  assert.match(h.element('#feedbackExportMessage').textContent,/手动复制/);
+  await h.event('storage',{key:'shijian.workspace-logout.v1:'+encodeURIComponent(member.id),newValue:'clear'});
+  assert.equal(h.element('#feedbackExportText').value,'','Logout clears the private export preview');
+  console.log('PASS 导出只包含当前筛选、保留版本和多行证据，复制受限可手动获取，退出清理摘要');
 }
 
 {

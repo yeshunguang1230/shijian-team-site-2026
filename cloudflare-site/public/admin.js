@@ -1,6 +1,7 @@
 import {api,whoAmI,arrayOf,$,esc,message} from './site.js';
 import {createDraftStore} from './workspace-draft.js';
-const state={user:null,sources:[],feedback:[],members:[],source:null,newSourceId:null,dirty:false,loaded:new Set(),busy:false,importing:false,feedbackBusy:false,settingsBusy:false,settingsDirty:false,settingsRevision:null,feedbackId:null,sync:null,syncBusy:false,lastSync:null,drafts:null,draftTimer:null,syncTimer:null,leaving:false};
+import {buildFeedbackSummary} from './feedback-export.js';
+const state={user:null,sources:[],feedback:[],feedbackReadAt:null,members:[],source:null,newSourceId:null,dirty:false,loaded:new Set(),busy:false,importing:false,feedbackBusy:false,settingsBusy:false,settingsDirty:false,settingsRevision:null,feedbackId:null,sync:null,syncBusy:false,lastSync:null,drafts:null,draftTimer:null,syncTimer:null,leaving:false};
 const views={overview:['工作概览','共同维护资料，让每个版本更可靠。'],sources:['共享史料','从文档到证据：检查来源，保存草稿，核验后发布。'],feedback:['团队建议','把想法变成清楚的要求，把改进过程记录下来。'],members:['团队成员','三个独立账号，同一个共同维护的工作区。'],settings:['规则设置','让智能体的回答边界与项目版本始终清楚。']};
 const sourceKeys=['title','author','date','period','locator','content','reliability'];
 const dateText=value=>{if(!value)return '';const date=new Date(value);return Number.isNaN(date.getTime())?value:date.toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})};
@@ -31,7 +32,7 @@ function checkSourceVersion(){const id=state.source?.id||state.newSourceId;const
 async function loadSources(){const [rows,members]=await Promise.all([request('/api/sources'),state.members.length?Promise.resolve(state.members):request('/api/members')]);state.sources=arrayOf(rows);state.members=arrayOf(members);renderSources();checkSourceVersion()}
 async function loadOverview(){const data=await request('/api/admin/overview');$('#statSources').textContent=data.sourceCount??0;$('#statFeedback').textContent=data.feedbackCount??0;$('#statMembers').textContent=data.memberCount??0;$('#statAI').textContent=data.aiConfigured?'已配置':'演示模式';$('#statAISub').textContent=data.aiConfigured?'登录成员可调用真实 AI':'真实 AI 尚未接入'}
 function renderFeedback(){const filter=$('#feedbackFilter').value;const rows=state.feedback.filter(x=>filter==='all'||x.status===filter);$('#feedbackList').innerHTML=rows.length?rows.map(x=>`<article class="feedback-card"><div class="feedback-meta"><span>${esc(x.author||'团队成员')} · ${esc(dateText(x.createdAt))}</span><span>${esc(x.category||'建议')}</span></div><h3>${esc(x.title)}</h3>${x.scenario?`<p><b>场景：</b>${esc(x.scenario)}</p>`:''}${x.current?`<p><b>当前问题：</b>${esc(x.current)}</p>`:''}${x.desired?`<p><b>希望结果：</b>${esc(x.desired)}</p>`:''}${x.evidence?`<p><b>证据：</b>${esc(x.evidence)}</p>`:''}${x.acceptance?`<p><b>验收：</b>${esc(x.acceptance)}</p>`:''}${x.updatedBy?`<small class="muted">最近更新：${esc(x.updatedBy)}${x.updatedAt?' · '+esc(dateText(x.updatedAt)):''}</small>`:''}<div class="feedback-bottom"><span class="pill ${x.priority==='P0'?'gold':'gray'}">${esc(x.priority||'P1')}</span><label>处理状态<select data-feedback-status="${esc(x.id)}">${['新建','已确认','开发中','修复待测','已通过','暂缓'].map(status=>`<option ${status===x.status?'selected':''}>${status}</option>`).join('')}</select></label></div></article>`).join(''):'<div class="empty">当前没有符合条件的建议。<br>提出一条具体建议，让团队一起改进。</div>';$('#feedbackList').querySelectorAll('[data-feedback-status]').forEach(select=>{select.disabled=state.feedbackBusy;select.onchange=()=>updateFeedbackStatus(select)})}
-async function loadFeedback(){state.feedback=arrayOf(await request('/api/feedback'));renderFeedback()}
+async function loadFeedback(){state.feedback=arrayOf(await request('/api/feedback'));state.feedbackReadAt=new Date().toISOString();renderFeedback()}
 async function updateFeedbackStatus(select){const item=state.feedback.find(x=>x.id===select.dataset.feedbackStatus);if(!item||state.feedbackBusy)return;const previous=item.status;state.feedbackBusy=true;select.disabled=true;try{const result=await request('/api/feedback',{method:'POST',body:JSON.stringify({...item,status:select.value})});const saved=result.item||result;state.feedback=state.feedback.map(x=>x.id===saved.id?saved:x);message($('#globalMessage'),'建议状态已保存到云端。');try{await loadFeedback()}catch{message($('#globalMessage'),'状态已保存到云端，列表暂未刷新。无需重复提交。',true)}}catch(error){select.value=previous;message($('#globalMessage'),error.status===409?'队友已更新这条建议，你的修改尚未保存。请刷新看板后重新选择。':error.message,true)}finally{state.feedbackBusy=false;renderFeedback()}}
 async function loadMembers(){state.members=arrayOf(await request('/api/members'));$('#memberList').innerHTML=state.members.map(x=>`<article class="member-card"><span class="avatar">${esc((x.displayName||x.username||'成').slice(-1))}</span><h3>${esc(x.displayName||x.username)}</h3><p>${esc(x.username)}</p><span class="pill">开发者${x.id===state.user.id?' · 我':''}</span><p style="margin:16px 0 0">${x.mustChangePassword?'等待成员完成首次密码设置':'账号已启用'}</p></article>`).join('')}
 let settingsLoadPromise=null;
@@ -98,6 +99,38 @@ $('#documentFile').onchange=async event=>{
   try{const {extractDocument}=await import('./import-document.js');let warning='';const content=await extractDocument(file,{onProgress:progress=>{if(progress.warning)warning=progress.warning;if(progress.message)message($('#importMessage'),progress.message)}});if(typeof content!=='string'||!content.trim())throw Error('没有提取到可用文字。扫描件或图片需要先转换为可复制的文字。');sourceFields().content.value=content;sourceFields().title.value ||= file.name.replace(/\.[^.]+$/,'');setDirty(true);flushDraft();message($('#importMessage'),`已提取 ${content.length.toLocaleString()} 个字符。请检查正文，补充作者与出处，再保存到云端。${warning?' '+warning:''}`)}catch(error){message($('#importMessage'),error.message||'提取失败，请尝试复制文档正文。',true)}finally{state.importing=false;lockSourceControls()}
 };
 $('#feedbackFilter').onchange=renderFeedback;$('#refreshFeedback').onclick=async()=>{if(state.feedbackBusy)return;try{await loadFeedback();message($('#globalMessage'),'看板已更新。')}catch(error){message($('#globalMessage'),error.message,true)}};
+function feedbackSnapshot(){
+  if(state.leaving)return '';
+  if(state.feedbackBusy){message($('#feedbackExportMessage'),'正在保存建议，请等保存完成后再导出。');return ''}
+  const text=buildFeedbackSummary(state.feedback,{filter:$('#feedbackFilter').value,loadedAt:state.feedbackReadAt});
+  $('#feedbackExportText').value=text;$('#feedbackExportPanel').hidden=!text;
+  if(!text)message($('#feedbackExportMessage'),'当前筛选下没有可导出的建议，可先刷新看板或调整筛选。');
+  return text;
+}
+$('#copyFeedback').onclick=async()=>{
+  const text=feedbackSnapshot();if(!text)return;
+  const button=$('#copyFeedback');button.disabled=true;
+  try{
+    if(!globalThis.navigator?.clipboard?.writeText)throw Error('clipboard unavailable');
+    await navigator.clipboard.writeText(text);
+    if(!state.leaving)message($('#feedbackExportMessage'),'建议摘要已复制，可粘贴给 Codex 或团队。这是当前列表快照。');
+  }catch{
+    if(state.leaving)return;
+    message($('#feedbackExportMessage'),'无法自动复制，完整摘要已显示在下方。点击“全选摘要”后手动复制，或下载 TXT。',true);
+    $('#feedbackExportText').focus();$('#feedbackExportText').select();
+  }finally{button.disabled=false}
+};
+$('#downloadFeedback').onclick=()=>{
+  const text=feedbackSnapshot();if(!text)return;
+  try{
+    const url=URL.createObjectURL(new Blob(['\uFEFF',text],{type:'text/plain;charset=utf-8'}));
+    const link=document.createElement('a');link.href=url;link.download='史鉴团队建议_'+new Date().toISOString().slice(0,19).replace(/[T:]/g,'-')+'.txt';
+    document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    message($('#feedbackExportMessage'),'已请求下载 TXT 摘要。若浏览器未保存，可使用下方文本手动复制。');
+  }catch{message($('#feedbackExportMessage'),'浏览器未能下载，完整摘要已显示在下方，可全选后复制。',true)}
+};
+$('#selectFeedbackExport').onclick=()=>{$('#feedbackExportText').focus();$('#feedbackExportText').select()};
+$('#closeFeedbackExport').onclick=()=>{$('#feedbackExportPanel').hidden=true};
 $('#feedbackForm').onsubmit=async event=>{event.preventDefault();if(state.feedbackBusy)return;const form=event.currentTarget;const button=form.querySelector('button[type="submit"]');state.feedbackBusy=true;button.disabled=true;lockForm(form,true);state.feedbackId ||= newId('F');const item={id:state.feedbackId,revision:0,status:'新建',owner:'待分配'};for(const key of ['title','category','priority','scenario','desired','evidence','acceptance'])item[key]=form.elements[key].value.trim();try{const result=await request('/api/feedback',{method:'POST',body:JSON.stringify(item)});const saved=result.item||result;state.feedback=[saved,...state.feedback.filter(x=>x.id!==saved.id)];state.feedbackId=null;$('#feedbackRetryChoice').hidden=true;form.reset();message($('#feedbackMessage'),'已提交到云端，队友可在同一看板看到。');state.loaded.delete('overview');try{await loadFeedback()}catch{message($('#feedbackMessage'),'建议已保存到云端，列表暂未刷新。无需重复提交。',true)}}catch(error){if(error.status===409)$('#feedbackRetryChoice').hidden=false;message($('#feedbackMessage'),error.status===409?'云端已有这一条建议，输入仍保留。请先刷新看板核对；确实需要新增时，可选择“新建另一条建议”。':error.message+'。输入仍保留，恢复连接后可重试。',true)}finally{state.feedbackBusy=false;button.disabled=false;lockForm(form,false);renderFeedback()}};
 $('#newFeedbackAttempt').onclick=()=>{if(state.feedbackBusy||state.leaving||!state.feedbackId)return;if(!confirm('请先刷新建议看板，确认原提交是否已保存。你已核对，并确定当前内容应作为另一条新建议吗？\n当前输入会保留；这一步不会提交，之后仍需点击提交按钮。'))return;state.feedbackId=newId('F');$('#feedbackRetryChoice').hidden=true;message($('#feedbackMessage'),'已按另一条新建议准备，当前输入保留。请检查内容，再点击“提交到团队看板”。')};
 $('#settingsForm').addEventListener('input',()=>{state.settingsDirty=true});
@@ -110,6 +143,7 @@ function endLocalSession(url='login.html'){
   state.sources=[];state.feedback=[];state.members=[];state.source=null;state.user=null;state.loaded.clear();
   for(const id of ['sourceForm','feedbackForm','settingsForm'])$('#'+id).reset();
   for(const id of ['sourceList','feedbackList','memberList','draftChoice'])$('#'+id).innerHTML='';
+  $('#feedbackExportText').value='';$('#feedbackExportPanel').hidden=true;
   $('#adminApp').hidden=true;$('#authLoading').hidden=false;$('#authLoading').textContent='已退出登录，正在返回登录页…';
   location.replace(url);
 }
