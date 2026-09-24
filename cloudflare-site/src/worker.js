@@ -6,7 +6,7 @@
  * need a second, Cloudflare-specific build.
  */
 
-import { ApiError, auditStatement, getSession, handleAuth, publicUser, requireDeveloper, verifyOrigin } from './auth.js';
+import { ApiError, getSession, handleAuth, publicUser, requireDeveloper, verifyOrigin } from './auth.js';
 
 const DEFAULT_PROMPT =
   '你是史鉴历史学习智能体。只使用给定 SOURCES。把关键结论标成事实、推断或争议；每个事实 claim 必须带 source_ids。资料不足时明确写资料不足，禁止虚构引用。只返回 JSON。';
@@ -22,6 +22,9 @@ const AI_WINDOW_SECONDS = 300;
 const AI_MAX_REQUESTS_PER_WINDOW = 20;
 const AI_UPSTREAM_TIMEOUT_MS = 25000;
 const AI_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+const SOURCE_FIELDS = ['id', 'title', 'author', 'date', 'reliability', 'period', 'locator', 'content', 'visibility'];
+const FEEDBACK_FIELDS = ['id', 'category', 'priority', 'title', 'targetVersion', 'scenario', 'current', 'desired', 'evidence', 'acceptance', 'notes', 'status', 'owner', 'retest'];
+const SETTINGS_COLUMNS = 'system_prompt,version,revision,updated_at,updated_by';
 
 const aiHits = new Map();
 
@@ -132,6 +135,36 @@ function cleanFeedback(input) {
   return clean;
 }
 
+function validRevision(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+// A timed-out response must not duplicate a save. Confirm a retry only while
+// the exact next revision is still present, authored by the same account and
+// containing the same normalized user-editable fields. Any other stale write
+// remains a conflict. Reads before a write are never used as a lock.
+function isConfirmedRetry(row, expectedRevision, userId, item, fields, saved = row) {
+  return row && validRevision(expectedRevision) && row.revision === expectedRevision + 1 &&
+    row.updated_by === userId && fields.every((key) => (saved[key] ?? '') === (item[key] ?? ''));
+}
+
+function feedbackValue(row) {
+  try { return { ...JSON.parse(row.payload), revision: row.revision }; }
+  catch { return null; }
+}
+
+async function writeWithAudit(env, statement, userId, action, entityId = '') {
+  // D1 batch is transactional. changes() refers to the preceding mutation,
+  // excluding sync trigger updates, so a losing concurrent write has no audit
+  // entry. An audit failure rolls back the data save as well.
+  const [result] = await env.DB.batch([
+    statement,
+    env.DB.prepare('INSERT INTO audit_log(id,user_id,action,entity_id,created_at) SELECT ?,?,?,?,? WHERE changes()=1')
+      .bind(crypto.randomUUID(), userId, action, entityId, new Date().toISOString())
+  ]);
+  return result;
+}
+
 function aiConfigured(env) {
   return Boolean(envText(env, 'SHIJIAN_BASE_URL') && envText(env, 'SHIJIAN_API_KEY') && envText(env, 'SHIJIAN_MODEL'));
 }
@@ -201,8 +234,12 @@ async function handleApi(request, env, path) {
     const { results = [] } = await env.DB.prepare(query).all();
     return jsonResponse(results, 200, request, env);
   }
-  const protectedPaths = ['/api/settings', '/api/feedback', '/api/v1/chat/completions', '/api/admin/overview', '/api/members', '/api/audit'];
+  const protectedPaths = ['/api/settings', '/api/feedback', '/api/sync', '/api/v1/chat/completions', '/api/admin/overview', '/api/members', '/api/audit'];
   if (protectedPaths.includes(path) || (path === '/api/sources' && request.method === 'POST')) requireDeveloper(session);
+  if (path === '/api/sync' && request.method === 'GET') {
+    const { results = [] } = await env.DB.prepare('SELECT domain,revision FROM sync_versions ORDER BY domain').all();
+    return jsonResponse(Object.fromEntries(results.map((row) => [row.domain, row.revision])), 200, request, env);
+  }
   if (path === '/api/admin/overview' && request.method === 'GET') {
     const counts = await env.DB.prepare('SELECT (SELECT COUNT(*) FROM sources) AS sourceCount,(SELECT COUNT(*) FROM feedback) AS feedbackCount,(SELECT COUNT(*) FROM users WHERE disabled=0) AS memberCount').first();
     return jsonResponse({ user: publicUser(session), ...counts, aiConfigured: aiConfigured(env) }, 200, request, env);
@@ -216,61 +253,83 @@ async function handleApi(request, env, path) {
     return jsonResponse({ items: results }, 200, request, env);
   }
   if (path === '/api/settings' && request.method === 'GET') {
-    const { results = [] } = await env.DB.prepare('SELECT key,value FROM settings').all();
-    const values = Object.fromEntries(results.map((row) => [row.key, row.value]));
-    return jsonResponse({ system_prompt: values.system_prompt || DEFAULT_PROMPT, version: values.version || 'v0.1' }, 200, request, env);
+    const item = await env.DB.prepare(`SELECT ${SETTINGS_COLUMNS} FROM team_settings WHERE id=1`).first();
+    if (!item) throw new Error('Team settings migration missing');
+    return jsonResponse(item, 200, request, env);
   }
   if (path === '/api/feedback' && request.method === 'GET') {
-    const { results = [] } = await env.DB.prepare('SELECT payload FROM feedback ORDER BY updated_at DESC LIMIT 1000').all();
-    const rows = [];
-    for (const row of results) {
-      try { rows.push(JSON.parse(row.payload)); } catch { /* ignore a corrupt row rather than breaking the board */ }
-    }
+    const { results = [] } = await env.DB.prepare('SELECT payload,revision FROM feedback ORDER BY updated_at DESC LIMIT 1000').all();
+    const rows = results.map(feedbackValue).filter(Boolean);
     return jsonResponse(rows, 200, request, env);
   }
   if (path === '/api/settings' && request.method === 'POST') {
     const data = await readJson(request);
-    const prompt = textValue(data.system_prompt, 'system_prompt', MAX_PROMPT);
-    const version = textValue(data.version, 'version', 100);
-    await env.DB.batch([
-      env.DB.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind('system_prompt', prompt),
-      env.DB.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind('version', version),
-      auditStatement(env, session.id, 'settings_updated')
-    ]);
-    return jsonResponse({ ok: true }, 200, request, env);
+    const item = { system_prompt: textValue(data.system_prompt, 'system_prompt', MAX_PROMPT), version: textValue(data.version, 'version', 100) };
+    const conflict = () => new ApiError('团队规则已更新，请刷新规则后重新编辑；当前输入未保存', 409);
+    if (!validRevision(data.revision) || data.revision < 1) throw conflict();
+    const now = new Date().toISOString();
+    const result = await writeWithAudit(env,
+      env.DB.prepare('UPDATE team_settings SET system_prompt=?,version=?,revision=revision+1,updated_at=?,updated_by=? WHERE id=1 AND revision=? RETURNING revision')
+        .bind(item.system_prompt, item.version, now, session.id, data.revision), session.id, 'settings_updated');
+    if (result.results?.length !== 1) {
+      const saved = await env.DB.prepare(`SELECT ${SETTINGS_COLUMNS} FROM team_settings WHERE id=1`).first();
+      if (isConfirmedRetry(saved, data.revision, session.id, item, ['system_prompt', 'version'])) {
+        return jsonResponse({ ...saved, ok: true, replayed: true }, 200, request, env);
+      }
+      throw conflict();
+    }
+    return jsonResponse({ ...item, revision: data.revision + 1, updated_at: now, updated_by: session.id, ok: true }, 200, request, env);
   }
   if (path === '/api/sources' && request.method === 'POST') {
     const data = await readJson(request);
     if ('items' in data) throw new ApiError('已停止整库替换，请一次保存一条史料');
     const item = cleanSource(data.item);
-    const existing = await env.DB.prepare('SELECT revision FROM sources WHERE id=?').bind(item.id).first();
+    const existing = await env.DB.prepare('SELECT * FROM sources WHERE id=?').bind(item.id).first();
+    const conflict = () => new ApiError('这条史料已被修改，请刷新后重新编辑；当前输入未保存', 409);
+    const confirmRetry = (saved) => isConfirmedRetry(saved, data.item.revision, session.id, item, SOURCE_FIELDS);
+    if (confirmRetry(existing)) return jsonResponse({ item: existing, replayed: true }, 200, request, env);
     const now = new Date().toISOString();
     const values = [item.title, item.author, item.date, item.reliability, item.period, item.locator, item.content, item.visibility, now, session.id];
     if (existing) {
-      if (!Number.isInteger(data.item.revision) || data.item.revision !== existing.revision) throw new ApiError('这条史料已被其他成员修改，请刷新后重新编辑', 409);
-      const result = await env.DB.prepare('UPDATE sources SET title=?,author=?,date=?,reliability=?,period=?,locator=?,content=?,visibility=?,updated_at=?,updated_by=?,revision=revision+1 WHERE id=? AND revision=?')
-        .bind(...values, item.id, data.item.revision).run();
-      if (result.meta?.changes !== 1) throw new ApiError('这条史料已被其他成员修改，请刷新后重新编辑', 409);
+      if (!validRevision(data.item.revision) || data.item.revision !== existing.revision) throw conflict();
+      const result = await writeWithAudit(env,
+        env.DB.prepare('UPDATE sources SET title=?,author=?,date=?,reliability=?,period=?,locator=?,content=?,visibility=?,updated_at=?,updated_by=?,revision=revision+1 WHERE id=? AND revision=? RETURNING revision')
+          .bind(...values, item.id, data.item.revision), session.id, 'source_updated', item.id);
+      if (result.results?.length !== 1) {
+        const saved = await env.DB.prepare('SELECT * FROM sources WHERE id=?').bind(item.id).first();
+        if (confirmRetry(saved)) return jsonResponse({ item: saved, replayed: true }, 200, request, env);
+        throw conflict();
+      }
       item.revision = data.item.revision + 1;
     } else {
       if (data.item.revision !== undefined && data.item.revision !== 0) throw new ApiError('这条史料已不存在，请刷新后重新添加', 409);
-      const result = await env.DB.prepare('INSERT OR IGNORE INTO sources(title,author,date,reliability,period,locator,content,visibility,updated_at,updated_by,id,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,1)')
-        .bind(...values, item.id).run();
-      if (result.meta?.changes !== 1) throw new ApiError('史料标识已存在，请刷新后重新保存', 409);
+      const result = await writeWithAudit(env,
+        env.DB.prepare('INSERT OR IGNORE INTO sources(title,author,date,reliability,period,locator,content,visibility,updated_at,updated_by,id,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,1) RETURNING revision')
+          .bind(...values, item.id), session.id, 'source_created', item.id);
+      if (result.results?.length !== 1) {
+        const saved = await env.DB.prepare('SELECT * FROM sources WHERE id=?').bind(item.id).first();
+        if (confirmRetry(saved)) return jsonResponse({ item: saved, replayed: true }, 200, request, env);
+        throw conflict();
+      }
       item.revision = 1;
     }
     item.updated_at = now;
     item.updated_by = session.id;
-    await auditStatement(env, session.id, existing ? 'source_updated' : 'source_created', item.id).run();
     return jsonResponse({ item }, existing ? 200 : 201, request, env);
   }
   if (path === '/api/feedback' && request.method === 'POST') {
-    const value = cleanFeedback(await readJson(request));
+    const data = await readJson(request);
+    const value = cleanFeedback(data);
+    const conflict = () => new ApiError('这条建议已被修改，请刷新后重新编辑；当前输入未保存', 409);
+    const confirmRetry = (row) => row && isConfirmedRetry(row, data.revision, session.id, value, FEEDBACK_FIELDS, feedbackValue(row) || {});
+    const previous = await env.DB.prepare('SELECT payload,revision,updated_by FROM feedback WHERE id=?').bind(value.id).first();
+    if (confirmRetry(previous)) return jsonResponse({ ...feedbackValue(previous), replayed: true }, 200, request, env);
+    if (previous && (!validRevision(data.revision) || data.revision !== previous.revision)) throw conflict();
+    if (!previous && data.revision !== undefined && data.revision !== 0) throw conflict();
     value.author = session.display_name;
     value.updatedBy = session.display_name;
     value.updatedAt = new Date().toISOString();
     value.createdAt = value.updatedAt;
-    const previous = await env.DB.prepare('SELECT payload FROM feedback WHERE id=?').bind(value.id).first();
     if (previous) {
       try {
         const original = JSON.parse(previous.payload);
@@ -278,11 +337,18 @@ async function handleApi(request, env, path) {
         value.createdAt = original.createdAt || value.createdAt;
       } catch { /* A malformed old record can be repaired by a logged-in member. */ }
     }
-    await env.DB.batch([
-      env.DB.prepare('INSERT INTO feedback(id,payload,updated_at) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at')
-        .bind(value.id, JSON.stringify(value), value.updatedAt),
-      auditStatement(env, session.id, 'feedback_saved', value.id)
-    ]);
+    value.revision = previous ? data.revision + 1 : 1;
+    const statement = previous
+      ? env.DB.prepare('UPDATE feedback SET payload=?,updated_at=?,updated_by=?,revision=revision+1 WHERE id=? AND revision=? RETURNING revision')
+        .bind(JSON.stringify(value), value.updatedAt, session.id, value.id, data.revision)
+      : env.DB.prepare('INSERT OR IGNORE INTO feedback(id,payload,updated_at,updated_by,revision) VALUES(?,?,?,?,1) RETURNING revision')
+        .bind(value.id, JSON.stringify(value), value.updatedAt, session.id);
+    const result = await writeWithAudit(env, statement, session.id, 'feedback_saved', value.id);
+    if (result.results?.length !== 1) {
+      const saved = await env.DB.prepare('SELECT payload,revision,updated_by FROM feedback WHERE id=?').bind(value.id).first();
+      if (confirmRetry(saved)) return jsonResponse({ ...feedbackValue(saved), replayed: true }, 200, request, env);
+      throw conflict();
+    }
     return jsonResponse(value, 200, request, env);
   }
   if (path === '/api/v1/chat/completions' && request.method === 'POST') {
@@ -292,8 +358,8 @@ async function handleApi(request, env, path) {
     const clientMessages = cleanMessages(original.messages);
     let systemPrompt = DEFAULT_PROMPT;
     try {
-      const row = await env.DB.prepare("SELECT value FROM settings WHERE key='system_prompt' LIMIT 1").first();
-      if (row?.value) systemPrompt = String(row.value).slice(0, MAX_PROMPT);
+      const row = await env.DB.prepare('SELECT system_prompt FROM team_settings WHERE id=1').first();
+      if (row?.system_prompt) systemPrompt = String(row.system_prompt).slice(0, MAX_PROMPT);
     } catch {
       // Keep the built-in safety rules if the settings row is unavailable.
     }

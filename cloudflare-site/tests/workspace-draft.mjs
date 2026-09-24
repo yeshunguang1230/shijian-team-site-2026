@@ -1,0 +1,23 @@
+import assert from 'node:assert/strict';
+import {createDraftStore} from '../public/workspace-draft.js';
+
+const values=new Map();
+const storage={get length(){return values.size},key:index=>[...values.keys()][index],getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};
+const first=createDraftStore('member-one',storage),second=createDraftStore('member-two',storage);
+const draft={id:'same-source',revision:7,visibility:'draft',fields:{title:'离线修改',content:'只在当前账号恢复'}};
+assert.equal(first.save(draft).ok,true);
+assert.equal(first.list()[0].fields.content,draft.fields.content);
+assert.equal(second.list().length,0,'An account must not discover another account\'s local recovery text');
+second.save({...draft,fields:{title:'另一账号的独立稿',content:'保留'}});
+first.clear();
+assert.equal(first.list().length,0);
+assert.equal(second.list().length,1,'Logout cleanup must not erase a different account\'s draft');
+assert.equal(second.list()[0].revision,7,'Recovery must retain the version originally edited for conflict protection');
+const forbiddenStorage={get length(){throw new Error('Storage denied')},setItem(){throw new Error('Quota exceeded')},removeItem(){throw new Error('Storage denied')}};
+const unavailable=createDraftStore('test',forbiddenStorage);
+assert.deepEqual(unavailable.list(),[]);
+assert.equal(unavailable.save(draft).ok,false);
+assert.equal(unavailable.clear(),false);
+values.set('shijian.workspace-draft.v1:member-two:damaged','invalid-json');
+assert.equal(second.list().length,1,'A damaged recovery record must not prevent opening valid records');
+console.log('PASS 恢复稿账号隔离、退出清理、版本保留、存储失败和损坏记录处理');

@@ -2,7 +2,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check src/worker.js && node --check src/auth.js && node tests/smoke.mjs && node tests/auth-security.mjs && node --experimental-vm-modules tests/admin-workflow.mjs",
+    "check": "node --check src/worker.js && node --check src/auth.js && node tests/smoke.mjs && node tests/auth-security.mjs && node tests/site-api.mjs && node tests/workspace-draft.mjs && node tests/source-retrieval.mjs && node --experimental-vm-modules tests/admin-workflow.mjs",
     "check:e2e": "node tests/d1-e2e.mjs",
     "deploy": "wrangler deploy",
     "build:pages": "node scripts/build-pages.mjs",

@@ -28,7 +28,7 @@ for (const origin of ['null', 'https://attacker.example', 'https://team.example.
 
 const db = { prepare(query) { if (query === 'SELECT 1 AS ok') return { first: async () => 1 }; throw new Error('Unexpected private database detail'); } };
 const env = { DB: db, SHIJIAN_TEAM_TOKEN: 'old-invite', SHIJIAN_ADMIN_TOKEN: 'old-admin' };
-for (const [method, path] of [['GET', '/api/settings'], ['GET', '/api/feedback'], ['GET', '/api/members'], ['GET', '/api/audit'], ['GET', '/api/admin/overview'], ['POST', '/api/sources'], ['POST', '/api/settings'], ['POST', '/api/feedback'], ['POST', '/api/v1/chat/completions']]) {
+for (const [method, path] of [['GET', '/api/settings'], ['GET', '/api/feedback'], ['GET', '/api/sync'], ['GET', '/api/members'], ['GET', '/api/audit'], ['GET', '/api/admin/overview'], ['POST', '/api/sources'], ['POST', '/api/settings'], ['POST', '/api/feedback'], ['POST', '/api/v1/chat/completions']]) {
   const response = await worker.fetch(new Request(`${site}${path}`, { method, headers: { 'X-Team-Token': 'old-invite', 'X-Admin-Token': 'old-admin' } }), env);
   assert.equal(response.status, 401, `${method} ${path} must reject old shared tokens`);
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
