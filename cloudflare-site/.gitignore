@@ -1,5 +1,9 @@
-.wrangler/
-.wrangler-*
 node_modules/
+.wrangler*/
+.pages-build/
+.dev.vars*
+*.db
+*.sqlite*
 private/
-.dev.vars
+*seed*.sql
+*credentials*

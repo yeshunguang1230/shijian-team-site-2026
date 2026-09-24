@@ -2,13 +2,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check src/worker.js && node tests/smoke.mjs",
+    "check": "node --check src/worker.js && node --check src/auth.js && node tests/smoke.mjs && node tests/auth-security.mjs",
     "check:e2e": "node tests/d1-e2e.mjs",
     "deploy": "wrangler deploy",
+    "build:pages": "node scripts/build-pages.mjs",
     "db:migrate:local": "wrangler d1 migrations apply shijian-team-db --local",
     "db:migrate:remote": "wrangler d1 migrations apply shijian-team-db --remote"
   },
   "devDependencies": {
     "wrangler": "^4.137.0"
+  },
+  "dependencies": {
+    "mammoth": "1.12.3",
+    "pdfjs-dist": "6.3.289"
   }
 }

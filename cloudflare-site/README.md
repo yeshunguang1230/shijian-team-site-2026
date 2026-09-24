@@ -1,47 +1,56 @@
-# 史鉴公网 Worker 版
+# 史鉴 · 云端团队网站
 
-本目录是《史鉴团队网站》的 Cloudflare Workers + Workers Assets + D1 版本。它保留现有网页使用的 `/api/*` 接口，因此三个人打开同一个 `*.workers.dev` 地址即可看到同一份反馈和史料。
+固定入口：https://shijian-team-site-public.pages.dev/
 
-## 目录
+## 使用方式
 
-- `public/`：只放需要公开的 5 个 HTML 页面，避免把 Python、数据库、课程文档和项目压缩包暴露到公网。
-- `src/worker.js`：静态资源入口、反馈/史料 API、管理员接口和 OpenAI 兼容 AI 代理。
-- `migrations/0001_initial.sql`：D1 表结构、演示系统提示词和 3 条待核验演示史料。
-- `wrangler.json`：Worker、Assets 和 D1 绑定配置。创建 D1 后，把 `database_id` 替换为实际 ID。
+- 游客：直接访问公开首页和学习空间，只能读取已发布史料。
+- 三名开发者：分别在 `/login.html` 使用独立账号，首次必须修改临时密码。登录后进入 `/admin.html`，管理共享史料、团队建议和规则设置。
+- 导入资料：后台「共享史料」选择 PDF、Word（.docx）、TXT 或 Markdown，检查提取出的正文、补充出处，先保存草稿再发布。无需编写 JSON。
+- 云端保存的是提取出的正文及填写的信息；不保存原附件。支持文字 PDF，扫描件需要先做文字识别。单文件最大 10 MB，PDF 最大 200 页，正文最大 20 万字符。
+- 三人共用一份云端数据库。保存成功后，其他成员点击刷新即可看到；这不是多人实时共同编辑器。修改同一资料有版本冲突保护。
+- 当前尚未配置模型服务，学习空间明确标识规则演示。网站、登录、资料和建议功能不依赖模型服务。
 
-## 部署步骤
+## 架构
 
-在本目录执行：
+Cloudflare Pages 提供固定网址和静态页面，并同源代理 `/api/*` 到 Cloudflare Worker。Worker 提供认证、权限校验、资料和建议接口，D1 存储用户、会话、史料和团队记录。电脑关机后，已部署网站与云端数据仍可使用。
 
-```powershell
-npx wrangler login
-npx wrangler d1 create shijian-team-db
-# 将命令输出的 database_id 写入 wrangler.json 的 database_id
-npx wrangler d1 migrations apply shijian-team-db --remote
-npx wrangler secret put SHIJIAN_ADMIN_TOKEN
-npx wrangler secret put SHIJIAN_TEAM_TOKEN      # 三名成员共用的邀请码
-npx wrangler secret put SHIJIAN_BASE_URL       # 可选：中转站 /v1 地址
-npx wrangler secret put SHIJIAN_API_KEY       # 可选：AI 密钥
-npx wrangler secret put SHIJIAN_MODEL         # 可选：模型名
-npx wrangler deploy
-```
+`public/` 是公开资源；`src/` 是后台代码；`pages/_worker.js` 是 Pages 代理；`migrations/` 是数据库迁移；`scripts/` 是部署辅助脚本。构建只复制公开资源及 Pages 代理，不上传账号文件、数据库备份、项目私有文档或开发环境。
 
-`SHIJIAN_ADMIN_TOKEN` 用于 `史鉴云端管理.html` 保存系统提示词和史料，`SHIJIAN_TEAM_TOKEN` 用于团队成员读取/提交共享反馈和调用 AI；两者都不能写进 GitHub、网页或聊天记录。三个 AI 配置 secret 缺一项时网站仍可离线演示，AI 接口显示未配置。Cloudflare 的套餐额度、费用和账号身份验证要求以你的 Cloudflare 控制台实际提示为准；遇到支付验证时不要填写敏感支付信息，先停在该步骤确认方案。
+## 账号与安全
 
-## API 行为
+仅创建三个开发者账号，没有公开注册入口。账号文件在工作区私有目录中单独保存，每人只接收自己的一份。密码使用带随机盐的 PBKDF2-SHA256 哈希；D1 不保存明文密码。会话使用 Secure、HttpOnly、SameSite=Lax Cookie，数据库仅保存会话令牌哈希。改密撤销该账号旧会话，退出撤销当前会话。
 
-- `GET /api/health`、`GET /api/config`：运行和 AI 配置状态。
-- `GET /api/settings`、`GET /api/sources`：读取公开的规则和史料。
-- `GET /api/feedback`、`POST /api/feedback`：必须带 `X-Team-Token`，写入/更新建议，同一个 `id` 幂等覆盖。
-- `POST /api/settings`、`POST /api/sources`：必须 `X-Admin-Token`，供云端管理页保存。
-- `POST /api/v1/chat/completions`：必须带 `X-Team-Token`，仅转发白名单字段，并有消息长度和每 IP 5 分钟 20 次限制；浏览器不会接触真实 AI 密钥。
+私有 API 在服务端检查身份；首次改密前不能访问后台数据。旧版团队邀请码和管理员令牌已不再接受。跨站写请求会检查来源；登录有速率限制。新增史料默认草稿，只有明确发布的内容对游客开放。升级保留旧数据，旧史料暂存为草稿。
 
-## 验证
+## 开发与验证
 
 ```powershell
-npm install
+npm ci
 npm run check
+npm run check:e2e
 npx wrangler deploy --dry-run
 ```
 
-`npm run check` 检查 Worker 语法、根路径跳转、健康检查和配置状态；`deploy --dry-run` 确认 Assets 与 D1 绑定均被识别。正式部署后用三台设备分别提交建议，刷新“团队建议中心”应看到同一条记录。
+端到端测试使用独立本地 D1 和测试账号，覆盖三个账号、强制改密、会话轮换/退出、旧令牌无效、草稿保护、版本冲突、发布可见、作者身份和重启持久化。
+
+## 部署
+
+现有 D1 已绑定于 `wrangler.json`，正常更新无需新建数据库或重新创建账号。
+
+```powershell
+npx wrangler d1 migrations apply shijian-team-db --remote
+npx wrangler deploy
+npx wrangler deploy --name shijian-team-site-2026-pages
+npm run build:pages
+$pagesDirectory = (Get-Content .pages-build/latest.txt -Raw).Trim()
+npx wrangler pages deploy $pagesDirectory --project-name shijian-team-site-public --branch main --commit-dirty=true
+```
+
+两个 Worker 共用数据库，发布安全更新时需要同时升级，避免旧入口继续使用旧规则。Pages 的固定域名已列在 Worker 允许来源中；启用新域名时需同步配置。
+
+首次账号初始化通过 `scripts/prepare-accounts.mjs` 在部署目录之外生成私有文件，再将该私有 seed SQL 导入 D1；不要重复生成或提交到 Git。已有账号的密码不能从数据库还原，遗失时由维护者安全重置。
+
+真实 AI 需要在 Worker 服务端分别配置 `SHIJIAN_BASE_URL`、`SHIJIAN_API_KEY`、`SHIJIAN_MODEL`。密钥不能写进网页、公开仓库或群聊。配置后仍须实际验证模型调用，不能仅凭配置状态宣称 AI 可用。
+
+公网可访问性受各设备的网络路径和服务状态影响。本版通过固定 Pages 域名访问，不要求三人在同一局域网。跨设备展示前仍应在展示现场网络实测。

@@ -1,0 +1,11 @@
+import { cp, mkdir, writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+const root = fileURLToPath(new URL('..', import.meta.url));
+const output = path.join(root, '.pages-build', 'release-' + Date.now());
+await mkdir(output, { recursive: true });
+await cp(path.join(root, 'public'), output, { recursive: true });
+await cp(path.join(root, 'pages', '_worker.js'), path.join(output, '_worker.js'));
+await writeFile(path.join(output, 'index.html'), '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=/史鉴团队网站.html"><title>史鉴</title><a href="/史鉴团队网站.html">进入史鉴</a></html>');
+await writeFile(path.join(root, '.pages-build', 'latest.txt'), output);
+console.log(output);

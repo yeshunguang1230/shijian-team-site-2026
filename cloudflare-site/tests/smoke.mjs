@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import worker from '../src/worker.js';
 
 const assets = {
@@ -42,3 +44,7 @@ for (const file of ['史鉴团队网站.html', '史鉴智能体.html', '史鉴�
   for (const match of scripts) assert.doesNotThrow(() => new Function(match[1]), `${file} 内嵌脚本语法错误`);
 }
 console.log('Frontend script syntax checks passed');
+for (const file of await readdir(new URL('../public/', import.meta.url))) {
+  if (file.endsWith('.js')) execFileSync(process.execPath, ['--check', fileURLToPath(new URL(`../public/${file}`, import.meta.url))]);
+}
+console.log('Frontend module syntax checks passed');
