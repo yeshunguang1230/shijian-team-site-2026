@@ -123,10 +123,12 @@ const lateSource = source('TAIL',
 
 // Exercise the actual browser handlers with an in-memory DOM and API. This
 // verifies the wiring, not just the retrieval helper; no network/account is used.
+let agentHarnessSequence = 0;
 async function withAgent(configured, run) {
   const keys = ['document', 'window', 'location', 'fetch'];
   const descriptors = new Map(keys.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   const elements = new Map(), handlers = {}, chats = [];
+  let gradeResponse = { scores: { 观点: 10, 证据: 10, 解释: 10, 史实准确: 10 }, feedback: '测试反馈' };
   const element = selector => {
     if (!elements.has(selector)) elements.set(selector, {
       value: '', textContent: '', innerHTML: '', className: '', style: {}, dataset: {},
@@ -152,17 +154,17 @@ async function withAgent(configured, run) {
       assert.ok(sources.every(item => item.id !== 'HIDDEN'));
       let result;
       if (prompt.includes('生成一道')) result = { question: '请根据材料提出观点并说明依据。', source_id: sources[0].id, fragment_id: sources[0].fragment_id };
-      else if (prompt.includes('批改')) result = { scores: { 观点: 10, 证据: 10, 解释: 10, 史实准确: 10 }, feedback: '测试反馈' };
+      else if (prompt.includes('批改')) result = gradeResponse;
       else result = { answer: '模型测试回答', claims: [{ type: '事实', text: '待人工复核的测试结论', source_ids: [sources[0].id] }] };
-      data = { choices: [{ message: { content: JSON.stringify(result) } }] };
+      data = { choices: [{ message: { content: typeof result === 'string' ? result : JSON.stringify(result) } }] };
     } else throw new Error(`Unexpected test API: ${path}`);
     return { ok: true, status: 200, json: async () => data };
   };
   try {
-    await import(`../public/agent.js?retrieval-test=${configured}`);
+    await import(`../public/agent.js?retrieval-test=${++agentHarnessSequence}`);
     await new Promise(resolve => setImmediate(resolve));
     const action = async name => handlers.click({ target: { closest: () => ({ dataset: { action: name } }) } });
-    await run({ element, chats, action });
+    await run({ element, chats, action, setGradeResponse: result => { gradeResponse = result; } });
   } finally {
     for (const key of keys) {
       const descriptor = descriptors.get(key);
@@ -206,4 +208,69 @@ await withAgent(false, async ({ element, chats, action }) => {
   assert.equal(chats.length, 0);
   assert.match(element('#gradeResult').innerHTML, /规则演示/);
   console.log('PASS AI未配置：保持规则演示，不发模型请求、不伪造评分');
+});
+
+await withAgent(true, async ({ element, action, setGradeResponse }) => {
+  await action('generateQuiz');
+  element('#studentAnswer').value = '根据材料提出观点，再解释证据与观点的关系。';
+  setGradeResponse({ scores: { 观点: 0, 证据: 25, 解释: 12.5, 史实准确: 20 }, weakness: '需要补充明确观点' });
+  await action('grade');
+  assert.match(element('#gradeResult').innerHTML, /57\.5 \/ 100/);
+  assert.equal(element('#scorePoint').textContent, 0, 'A genuine numeric zero remains a valid score');
+  assert.equal(element('#scoreEvidence').textContent, 25);
+  assert.equal(element('#scoreExplain').textContent, 12.5);
+  assert.match(element('#weaknesses').innerHTML, /AI 参考：需要补充明确观点/);
+  const previousRecords = element('#weaknesses').innerHTML;
+  const standard = { 观点: 10, 证据: 10, 解释: 10, 史实准确: 10 };
+  const malformed = [
+    ['空对象', {}], ['数组', []], ['无对象', null], ['字符串对象', '10'],
+    ['缺项', { 观点: 10, 证据: 10, 解释: 10 }],
+    ['数字字符串', { ...standard, 史实准确: '10' }],
+    ['空字符串', { ...standard, 史实准确: '' }],
+    ['布尔值', { ...standard, 史实准确: false }],
+    ['无说明null', { ...standard, 史实准确: null }],
+    ['负数', { ...standard, 史实准确: -1 }],
+    ['超过上限', { ...standard, 史实准确: 26 }],
+    ['嵌套对象', { ...standard, 史实准确: { score: 10 } }],
+    ['数组分数', { ...standard, 史实准确: [10] }],
+    ['非法文字', { ...standard, 史实准确: '大约十五分' }],
+  ];
+  for (const [label, scores] of malformed) {
+    setGradeResponse({ scores, weakness: `不得记录的坏数据-${label}`, feedback: '不应作为可靠评价展示' });
+    await action('grade');
+    assert.match(element('#gradeResult').innerHTML, /AI 评分未完成/, label);
+    assert.ok(!element('#gradeResult').innerHTML.includes('class="score"'), `${label} must not generate a total`);
+    assert.equal(element('#scoreFact').textContent, '未评分', label);
+    assert.equal(element('#weaknesses').innerHTML, previousRecords, `${label} must not create a weakness record`);
+  }
+  // JSON permits exponent notation that may overflow a JavaScript number.
+  setGradeResponse('{"scores":{"观点":10,"证据":10,"解释":10,"史实准确":1e999},"weakness":"无穷值不得入库"}');
+  await action('grade');
+  assert.equal(element('#scoreFact').textContent, '未评分');
+  assert.ok(!element('#gradeResult').innerHTML.includes('class="score"'));
+  assert.equal(element('#weaknesses').innerHTML, previousRecords);
+  console.log('PASS AI评分：缺项/数组/非法值/非有限数不变成0分、不生成总分、不写入薄弱点');
+
+  for (const response of [
+    { scores: { ...standard, 史实准确: '无法核验' } },
+    { scores: { ...standard, 史实准确: null }, unscored_reasons: { 史实准确: '材料未提供足够依据' } },
+  ]) {
+    setGradeResponse({ ...response, weakness: '不可把资料不足当学生薄弱点' });
+    await action('grade');
+    assert.equal(element('#scoreFact').textContent, '待核验');
+    assert.equal(element('#scorePoint').textContent, 10);
+    assert.match(element('#gradeResult').innerHTML, /AI 部分反馈/);
+    assert.ok(!element('#gradeResult').innerHTML.includes('class="score"'));
+    assert.equal(element('#weaknesses').innerHTML, previousRecords);
+  }
+  setGradeResponse({ scores: { 观点: '未评分', 证据: '资料不足', 解释: '无法评分', 史实准确: '待核验' } });
+  await action('grade');
+  assert.ok(!element('#gradeResult').innerHTML.includes('class="score"'));
+  assert.equal(element('#weaknesses').innerHTML, previousRecords);
+  setGradeResponse({ scores: standard, weakness: [], feedback: {}, rewrite: [] });
+  await action('grade');
+  assert.match(element('#gradeResult').innerHTML, /40 \/ 100/);
+  assert.ok(!element('#gradeResult').innerHTML.includes('[object Object]'));
+  assert.equal(element('#weaknesses').innerHTML, previousRecords, 'Malformed weakness text is not recorded even when scores are valid');
+  console.log('PASS AI评分：明确无法核验显示待核验，完整合法评分才显示总分');
 });
