@@ -32,11 +32,14 @@ function validateDocx(buffer) {
   }
 }
 
-export async function extractDocument(file) {
+export async function extractDocument(file, { onProgress } = {}) {
   if (!file || !file.size) throw new Error('请选择一个有内容的文件。');
   if (file.size > LIMIT_BYTES) throw new Error('文件最多 10 MB，请分章节导入。');
   const ext = file.name.split('.').pop().toLowerCase();
   let text = '';
+  let warning = '';
+  const progress = (value) => { if (typeof onProgress === 'function') onProgress(value); };
+  progress({ stage: 'read', current: 0, total: 1, message: '正在读取文档…' });
   if (['txt', 'md'].includes(ext)) {
     const buffer = await file.arrayBuffer();
     try { text = new TextDecoder('utf-8', { fatal: true }).decode(buffer); }
@@ -44,6 +47,7 @@ export async function extractDocument(file) {
   } else if (ext === 'docx') {
     const buffer = await file.arrayBuffer();
     validateDocx(buffer);
+    progress({ stage: 'extract', current: 0, total: 1, message: '正在提取 Word 正文，图片和原排版不会保留…' });
     const mammoth = await mammothLibrary();
     text = (await mammoth.extractRawText({ arrayBuffer: buffer })).value;
   } else if (ext === 'pdf') {
@@ -59,16 +63,20 @@ export async function extractDocument(file) {
       if (pdf.numPages > 200) throw new Error('PDF 超过 200 页，请按章节拆分后导入。');
       const pages = [];
       let length = 0;
+      let emptyPages = 0;
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
         const data = await page.getTextContent();
         const content = data.items.map(item => (item.str || '') + (item.hasEOL ? '\n' : ' ')).join('').trim();
         if (content) pages.push(`【第 ${i} 页】\n${content}`);
+        else emptyPages++;
         length += content.length;
         page.cleanup();
         if (length > LIMIT_TEXT) throw new Error('正文超过 20 万字，请分章节导入。');
+        progress({ stage: 'extract', current: i, total: pdf.numPages, message: `正在提取 PDF：第 ${i} / ${pdf.numPages} 页` });
       }
       text = pages.join('\n\n');
+      if (emptyPages) warning = `有 ${emptyPages} 页未提取到文字，可能为空白页或扫描图片；请对照原文件检查，图片内容未入库。`;
     } catch (error) {
       if (/password|destroyed/i.test(error.message || '')) throw new Error('此 PDF 已加密，请先解锁并另存后导入。');
       throw error;
@@ -77,5 +85,6 @@ export async function extractDocument(file) {
   text = text.replace(/\u0000/g, '').trim();
   if (!text) throw new Error('未提取到文字。扫描件和图片目前不支持识别，请粘贴识别后的正文。');
   if (text.length > LIMIT_TEXT) throw new Error('正文超过 20 万字，请分章节导入。');
+  progress({ stage: 'done', current: 1, total: 1, message: '正文提取完成，请检查后保存到云端。', warning });
   return text;
 }

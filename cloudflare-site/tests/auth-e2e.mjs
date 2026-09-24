@@ -108,11 +108,13 @@ try {
     secrets.push(hashed.hash, hashed.salt);
     rows.push(`INSERT INTO users(id,username,display_name,role,password_hash,password_salt,password_iterations,must_change_password,disabled,created_at,updated_at) VALUES(${sql(a.id)},${sql(a.username)},${sql(a.displayName)},'developer',${sql(hashed.hash)},${sql(hashed.salt)},${hashed.iterations},1,0,${sql(now)},${sql(now)});`);
   }
+  const auditFailureId = `audit-fail-${suffix}`;
+  rows.push(`CREATE TRIGGER local_audit_failure BEFORE INSERT ON audit_log WHEN NEW.entity_id=${sql(auditFailureId)} BEGIN SELECT RAISE(ABORT,'Local intentional audit failure'); END;`);
   await writeFile(seedFile, `${rows.join('\n')}\n`, 'utf8');
   try { await run(['d1', 'execute', 'shijian-team-db', '--local', '--persist-to', persist, '--file', seedFile, '--config', 'wrangler.json']); }
   finally { await cleanup(seedFile, '.wrangler-auth-seed-'); }
   server = await startServer();
-  const routes = [['GET', '/api/settings'], ['GET', '/api/feedback'], ['GET', '/api/members'], ['GET', '/api/audit'], ['GET', '/api/admin/overview'], ['POST', '/api/settings'], ['POST', '/api/feedback'], ['POST', '/api/sources'], ['POST', '/api/v1/chat/completions']];
+  const routes = [['GET', '/api/settings'], ['GET', '/api/feedback'], ['GET', '/api/sync'], ['GET', '/api/members'], ['GET', '/api/audit'], ['GET', '/api/admin/overview'], ['POST', '/api/settings'], ['POST', '/api/feedback'], ['POST', '/api/sources'], ['POST', '/api/v1/chat/completions']];
   for (const [method, path] of routes) {
     await expectStatus(path, 401, { method }, `Guest denied ${method} ${path}`);
     await expectStatus(path, 401, { method, headers: { 'X-Team-Token': legacyTeam, 'X-Admin-Token': legacyAdmin } }, 'Configured legacy tokens cannot bypass accounts');
@@ -138,32 +140,95 @@ try {
       await expectStatus('/api/settings', 401, headers(old));
     }
     await expectStatus('/api/auth/login', 401, json({ username: a.username, password: a.password }), 'Old password rejected');
-    await expectStatus('/api/settings', 200, headers(cookie), 'All developers can read settings');
-    await expectStatus('/api/settings', 200, json({ system_prompt: `本地测试规则 ${a.username}`, version: `test-${a.id}` }, cookie), 'All developers can update settings');
+    const settings = (await expectStatus('/api/settings', 200, headers(cookie), 'All developers can read settings')).body;
+    await expectStatus('/api/settings', 200, json({ system_prompt: `本地测试规则 ${a.username}`, version: `test-${a.id}`, revision: settings.revision }, cookie), 'All developers can update settings');
   }
   const members = (await expectStatus('/api/members', 200, headers(cookies[0]))).body.items;
   assert.equal(members.length, 3); assert.deepEqual(new Set(members.map((m) => m.id)), new Set(accounts.map((a) => a.id)));
+  const getSync = async () => (await expectStatus('/api/sync', 200, headers(cookies[0]))).body;
+  const getAuditCount = async (action, entity) => (await expectStatus('/api/audit', 200, headers(cookies[0]))).body.items.filter((entry) => entry.action === action && (!entity || entry.entity_id === entity)).length;
+  const initialSync = await getSync();
+  assert.deepEqual(Object.keys(initialSync).sort(), ['feedback', 'settings', 'sources']);
+  for (const revision of Object.values(initialSync)) assert.ok(Number.isSafeInteger(revision) && revision >= 1, 'Sync returns counters only');
+  await expectStatus('/api/sources', 500, json({ item: { id: auditFailureId, revision: 0, title: '事务回滚测试', content: '审计失败不能留下未确认的数据' } }, cookies[0]), 'Audit failure rolls back the save');
+  assert.ok(!(await expectStatus('/api/sources', 200, headers(cookies[0]))).body.some((item) => item.id === auditFailureId));
+  assert.deepEqual(await getSync(), initialSync, 'Rollback also restores the sync counter');
 
-  const source = { id: `source-${suffix}`, title: '测试史料', content: '共同核验的史料正文', author: '史料作者', locator: '测试页码 1', visibility: 'draft' };
+  const source = { id: `source-${suffix}`, title: '测试史料', content: '共同核验的史料正文', author: '史料作者', locator: '测试页码 1', visibility: 'draft', revision: 0 };
   const created = (await expectStatus('/api/sources', 201, json({ item: source }, cookies[0]))).body.item;
   assert.equal(created.revision, 1); assert.equal(created.updated_by, accounts[0].id);
+  const sourceSync = await getSync();
+  assert.equal(sourceSync.sources, initialSync.sources + 1);
+  assert.equal(sourceSync.feedback, initialSync.feedback); assert.equal(sourceSync.settings, initialSync.settings);
+  const replayedCreate = (await expectStatus('/api/sources', 200, json({ item: source }, cookies[0]), 'Lost source create response retry')).body;
+  assert.equal(replayedCreate.replayed, true); assert.deepEqual(replayedCreate.item, created);
+  assert.equal(await getAuditCount('source_created', source.id), 1, 'Retry creates no duplicate audit record');
+  assert.deepEqual(await getSync(), sourceSync, 'Retry changes no sync counter');
+  await expectStatus('/api/sources', 409, json({ item: source }, cookies[1]), 'Another account cannot confirm the same save');
+  await expectStatus('/api/sources', 409, json({ item: { ...source, content: '同一 id 不同内容' } }, cookies[0]), 'Changed retry cannot replace saved source');
+  await expectStatus('/api/sources', 409, json({ item: { ...created, revision: undefined } }, cookies[0]), 'Old source client missing revision conflicts');
   assert.ok(!(await expectStatus('/api/sources', 200)).body.some((x) => x.id === source.id), 'Guests cannot see drafts');
   for (const cookie of cookies) assert.ok((await expectStatus('/api/sources', 200, headers(cookie))).body.some((x) => x.id === source.id), 'All three members see the draft');
   const updated = (await expectStatus('/api/sources', 200, json({ item: { ...created, content: '成员 2 校对正文' } }, cookies[1]))).body.item;
   assert.equal(updated.revision, 2);
+  const replayedUpdate = (await expectStatus('/api/sources', 200, json({ item: { ...created, content: '成员 2 校对正文' } }, cookies[1]))).body;
+  assert.equal(replayedUpdate.replayed, true); assert.deepEqual(replayedUpdate.item, updated);
+  await expectStatus('/api/sources', 409, json({ item: { ...created, content: '成员 2 校对正文' } }, cookies[2]), 'Another account cannot confirm an update');
   await expectStatus('/api/sources', 409, json({ item: { ...created, content: '过时编辑不能覆盖' } }, cookies[2]), 'Stale revision conflicts');
   assert.equal((await expectStatus('/api/sources', 200, headers(cookies[2]))).body.find((x) => x.id === source.id).content, '成员 2 校对正文');
   assert.equal((await expectStatus('/api/sources', 200, json({ item: { ...updated, visibility: 'published' } }, cookies[2]))).body.item.revision, 3);
   const guestSource = (await expectStatus('/api/sources', 200)).body.find((x) => x.id === source.id);
   assert.equal(guestSource.content, '成员 2 校对正文'); assert.ok(!('updated_by' in guestSource), 'Public sources omit member identity');
   await expectStatus('/api/sources', 400, json({ items: [] }, cookies[0]), 'Whole database replacement disabled');
+  await expectStatus('/api/sources', 409, json({ item: source }, cookies[0]), 'Very old request cannot claim a newer revision');
+  const legacySource = (await expectStatus('/api/sources', 201, json({ item: { title: '旧客户端新建', content: '自动生成标识' } }, cookies[0]))).body.item;
+  assert.ok(legacySource.id); assert.equal(legacySource.revision, 1, 'Legacy new records without id/revision stay compatible');
+  const sourceRaces = await Promise.all([1, 2].map((n) => request('/api/sources', json({ item: { ...legacySource, content: `并发校对 ${n}` } }, cookies[n]))));
+  assert.deepEqual(sourceRaces.map((result) => result.response.status).sort(), [200, 409], 'Exactly one concurrent source update wins');
+  assert.equal(await getAuditCount('source_updated', legacySource.id), 1, 'Losing concurrent update creates no audit entry');
 
-  const feedback = { id: `feedback-${suffix}`, title: '团队共享反馈', author: '冒名作者', createdAt: '1900-01-01', status: '新建', priority: 'P1' };
+  const feedback = { id: `feedback-${suffix}`, title: '团队共享反馈', author: '冒名作者', createdAt: '1900-01-01', status: '新建', priority: 'P1', revision: 0 };
+  const beforeFeedback = await getSync();
   const saved = (await expectStatus('/api/feedback', 200, json(feedback, cookies[0]))).body;
   assert.equal(saved.author, accounts[0].displayName); assert.equal(saved.updatedBy, accounts[0].displayName); assert.notEqual(saved.createdAt, feedback.createdAt);
+  assert.equal(saved.revision, 1);
+  const feedbackSync = await getSync(); assert.equal(feedbackSync.feedback, beforeFeedback.feedback + 1); assert.equal(feedbackSync.sources, beforeFeedback.sources);
+  const replayedFeedback = (await expectStatus('/api/feedback', 200, json(feedback, cookies[0]))).body;
+  assert.equal(replayedFeedback.replayed, true); assert.equal(replayedFeedback.revision, 1);
+  assert.deepEqual(await getSync(), feedbackSync);
+  assert.equal(await getAuditCount('feedback_saved', feedback.id), 1);
+  await expectStatus('/api/feedback', 409, json(feedback, cookies[1]), 'Another account cannot confirm a feedback save');
+  await expectStatus('/api/feedback', 409, json({ ...feedback, title: '不同标题' }, cookies[0]), 'Changed feedback retry conflicts');
   const edited = (await expectStatus('/api/feedback', 200, json({ ...saved, author: '再次冒名', createdAt: '1800-01-01', status: '开发中' }, cookies[1]))).body;
   assert.equal(edited.author, accounts[0].displayName); assert.equal(edited.createdAt, saved.createdAt); assert.equal(edited.updatedBy, accounts[1].displayName);
+  assert.equal(edited.revision, 2);
+  await expectStatus('/api/feedback', 409, json({ ...saved, status: '暂缓' }, cookies[2]), 'Stale feedback revision conflicts');
+  await expectStatus('/api/feedback', 409, json({ ...edited, revision: undefined }, cookies[1]), 'Old feedback client missing revision conflicts');
+  const feedbackRetry = (await expectStatus('/api/feedback', 200, json({ ...saved, status: '开发中' }, cookies[1]))).body;
+  assert.equal(feedbackRetry.replayed, true); assert.equal(feedbackRetry.revision, 2);
+  const feedbackRaces = await Promise.all([0, 2].map((n) => request('/api/feedback', json({ ...edited, notes: `并发建议 ${n}` }, cookies[n]))));
+  assert.deepEqual(feedbackRaces.map((result) => result.response.status).sort(), [200, 409], 'Exactly one concurrent feedback update wins');
+  assert.equal(await getAuditCount('feedback_saved', feedback.id), 3, 'Each accepted feedback revision has one audit record');
   assert.equal((await expectStatus('/api/feedback', 200, headers(cookies[2]))).body.find((x) => x.id === feedback.id).status, '开发中');
+
+  const settings = (await expectStatus('/api/settings', 200, headers(cookies[0]))).body;
+  const settingsInput = { system_prompt: '更新后须同时生效的规则', version: 'v-shared', revision: settings.revision };
+  const beforeSettings = await getSync();
+  const newSettings = (await expectStatus('/api/settings', 200, json(settingsInput, cookies[0]))).body;
+  assert.equal(newSettings.revision, settings.revision + 1);
+  const settingsSync = await getSync(); assert.equal(settingsSync.settings, beforeSettings.settings + 1); assert.equal(settingsSync.feedback, beforeSettings.feedback);
+  const auditSettings = await getAuditCount('settings_updated');
+  assert.equal((await expectStatus('/api/settings', 200, json(settingsInput, cookies[0]))).body.replayed, true);
+  assert.equal(await getAuditCount('settings_updated'), auditSettings); assert.deepEqual(await getSync(), settingsSync);
+  await expectStatus('/api/settings', 409, json(settingsInput, cookies[1]), 'Another account cannot confirm the same settings');
+  await expectStatus('/api/settings', 409, json({ ...settingsInput, system_prompt: '过时规则' }, cookies[0]), 'Stale settings cannot overwrite rules');
+  await expectStatus('/api/settings', 409, json({ ...settingsInput, revision: undefined }, cookies[0]), 'Old settings client missing revision conflicts');
+  const settingsRaces = await Promise.all([1, 2].map((n) => request('/api/settings', json({ system_prompt: `并发规则 ${n}`, version: `并发版本 ${n}`, revision: newSettings.revision }, cookies[n]))));
+  assert.deepEqual(settingsRaces.map((result) => result.response.status).sort(), [200, 409], 'Exactly one concurrent settings update wins');
+  const settingsWinner = settingsRaces.find((result) => result.response.status === 200).body;
+  const settingsStored = (await expectStatus('/api/settings', 200, headers(cookies[0]))).body;
+  assert.equal(settingsStored.system_prompt, settingsWinner.system_prompt); assert.equal(settingsStored.version, settingsWinner.version, 'Prompt and version are saved together');
+  assert.equal(await getAuditCount('settings_updated'), auditSettings + 1);
   for (const path of ['/api/settings', '/api/sources', '/api/feedback', '/api/auth/logout', '/api/auth/password']) await expectStatus(path, 403, json({}, cookies[0], { Origin: 'https://invalid.example' }), 'Cross-origin authenticated mutation rejected');
   await expectStatus('/api/settings', 200, headers(cookies[0]), 'Rejected cross-origin logout preserves session');
   const audit = (await expectStatus('/api/audit', 200, headers(cookies[0]))).body.items;
@@ -188,7 +253,7 @@ try {
     assert.equal((await expectStatus('/api/auth/me', 200, headers(active))).body.user, null);
     await expectStatus('/api/settings', 401, headers(active), 'Logout revokes session');
   }
-  console.log('Local D1 auth e2e passed: three accounts, forced password change, shared drafts/conflicts/publication, feedback attribution, persistence, origin checks, secrets, session revocation.');
+  console.log('Local D1 auth e2e passed: three accounts, forced password change, shared drafts/publication, concurrent sources/feedback/settings, safe retries, sync counters, audit integrity, persistence, origin checks, secrets, session revocation.');
 } finally {
   await stopServer(server);
   await cleanup(seedFile, '.wrangler-auth-seed-');
