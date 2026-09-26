@@ -6,6 +6,6 @@ const output = path.join(root, '.pages-build', 'release-' + Date.now());
 await mkdir(output, { recursive: true });
 await cp(path.join(root, 'public'), output, { recursive: true });
 await cp(path.join(root, 'pages', '_worker.js'), path.join(output, '_worker.js'));
-await writeFile(path.join(output, 'index.html'), '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=/史鉴团队网站.html"><title>史鉴</title><a href="/史鉴团队网站.html">进入史鉴</a></html>');
+await writeFile(path.join(output, 'index.html'), '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=/观史团队网站.html"><title>观史</title><a href="/观史团队网站.html">进入观史</a></html>');
 await writeFile(path.join(root, '.pages-build', 'latest.txt'), output);
 console.log(output);
