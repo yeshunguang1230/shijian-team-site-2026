@@ -1,4 +1,5 @@
 /* Small-screen safeguards: grid children may shrink and Chinese display text may wrap. */
 .hero-copy,.hero-visual,.section-heading,.method-card,.statement-copy,.statement-list,.source-card,.team-layout,.team-panel{min-width:0}
 .hero h1,.section-heading h2{overflow-wrap:anywhere;word-break:break-all}
-.hero-lede{overflow-wrap:anywhere;word-break:break-all}
+.hero-lede{max-width:100%;overflow-wrap:anywhere;word-break:break-all;white-space:normal}
+@media(max-width:640px){.hero h1{font-size:34px;line-height:1.12}.hero-lede{font-size:17px}}
