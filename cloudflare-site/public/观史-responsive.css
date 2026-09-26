@@ -1,0 +1,4 @@
+/* Small-screen safeguards: grid children may shrink and Chinese display text may wrap. */
+.hero-copy,.hero-visual,.section-heading,.method-card,.statement-copy,.statement-list,.source-card,.team-layout,.team-panel{min-width:0}
+.hero h1,.section-heading h2{overflow-wrap:anywhere;word-break:break-word}
+.hero-lede{overflow-wrap:anywhere}
