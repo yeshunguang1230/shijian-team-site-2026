@@ -3,4 +3,4 @@
 .hero h1,.section-heading h2{overflow-wrap:anywhere;word-break:break-all}
 .hero-lede{max-width:100%;overflow-wrap:anywhere;word-break:break-all;white-space:normal}
 @media(max-width:833px){body{overflow-x:hidden}.hero,.hero-copy,.hero-visual,.hero-actions{width:100%;max-width:100%;min-width:0}.hero-copy,.hero-visual{width:calc(100vw - 40px);max-width:calc(100vw - 40px)}.hero-actions{width:calc(100vw - 40px);max-width:calc(100vw - 40px);overflow:hidden}.button{max-width:100%}}
-@media(max-width:640px){.hero h1{font-size:34px;line-height:1.12}.hero-lede{font-size:17px}}
+@media(max-width:640px){.hero h1{font-size:34px;line-height:1.12}.hero-lede{font-size:16px;letter-spacing:-.02em}}
