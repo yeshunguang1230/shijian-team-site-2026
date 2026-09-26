@@ -7,8 +7,8 @@ import worker from '../src/worker.js';
 const assets = {
   fetch(request) {
     const url = new URL(request.url);
-    if (decodeURIComponent(url.pathname) === '/史鉴团队网站.html') {
-      return Promise.resolve(new Response('<!doctype html><title>史鉴</title>', {
+    if (['/观史团队网站.html', '/史鉴团队网站.html'].includes(decodeURIComponent(url.pathname))) {
+      return Promise.resolve(new Response('<!doctype html><title>观史</title>', {
         headers: { 'Content-Type': 'text/html; charset=utf-8' }
       }));
     }
@@ -29,15 +29,18 @@ assert.deepEqual(await config.json(), { configured: false, model: '' });
 
 const root = await worker.fetch(new Request('https://example.workers.dev/'), env);
 assert.equal(root.status, 302);
-assert.equal(decodeURIComponent(new URL(root.headers.get('Location')).pathname), '/史鉴团队网站.html');
+assert.equal(decodeURIComponent(new URL(root.headers.get('Location')).pathname), '/观史团队网站.html');
 
-const page = await worker.fetch(new Request('https://example.workers.dev/史鉴团队网站.html'), env);
+const page = await worker.fetch(new Request('https://example.workers.dev/观史团队网站.html'), env);
 assert.equal(page.status, 200);
 assert.equal(page.headers.get('X-Content-Type-Options'), 'nosniff');
 
+const legacyPage = await worker.fetch(new Request('https://example.workers.dev/史鉴团队网站.html'), env);
+assert.equal(legacyPage.status, 200, '旧版入口必须继续可用');
+
 console.log('Cloudflare Worker smoke checks passed');
 
-for (const file of ['史鉴团队网站.html', '史鉴智能体.html', '史鉴建议中心.html', '史鉴云端管理.html']) {
+for (const file of ['观史团队网站.html', '史鉴团队网站.html', '史鉴智能体.html', '史鉴建议中心.html', '史鉴云端管理.html']) {
   const html = await readFile(new URL(`../public/${file}`, import.meta.url), 'utf8');
   const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)];
   assert.ok(scripts.length, `${file} 没有脚本`);

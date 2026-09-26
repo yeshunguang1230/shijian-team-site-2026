@@ -1,6 +1,8 @@
 # 史鉴 · 云端团队网站
 
-固定入口：[史鉴团队网站](https://shijian-team-site-public.pages.dev/)
+固定入口：[观史第二版](https://shijian-team-site-public.pages.dev/)
+
+旧版入口仍保留：[史鉴团队网站](https://shijian-team-site-public.pages.dev/史鉴团队网站.html)。第二版只是新的公开入口，账号、资料、建议和 D1 后端继续共用。
 
 下述功能与边界对应本仓库代码；线上版本及实测记录由部署记录确认。
 

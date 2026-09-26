@@ -393,7 +393,7 @@ export default {
     try {
       if (url.pathname.startsWith('/api/')) return await handleApi(request, env, url.pathname);
       if (request.method !== 'GET' && request.method !== 'HEAD') return errorResponse('method not allowed', 405, request, env);
-      if (url.pathname === '/' || url.pathname === '') return Response.redirect(`${url.origin}/史鉴团队网站.html`, 302);
+      if (url.pathname === '/' || url.pathname === '') return Response.redirect(`${url.origin}/观史团队网站.html`, 302);
       const pagePath = decodeURIComponent(url.pathname).replace(/\.html$/, '').replace(/\/$/, '');
       if (['/admin', '/史鉴云端管理', '/史鉴建议中心'].includes(pagePath)) {
         const session = await getSession(request, env);
