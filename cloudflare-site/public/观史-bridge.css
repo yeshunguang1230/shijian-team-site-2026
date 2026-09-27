@@ -15,4 +15,19 @@ h1,h2,h3{letter-spacing:-.03em}h1{font:600 clamp(38px,4.2vw,64px)/1.18 Georgia,"
 .statement-section{max-width:none;grid-template-columns:minmax(0,1fr) minmax(0,680px);background:var(--navy);color:#edf6f4}.statement-copy,.statement-list{max-width:1240px}.statement-copy h2{color:#fff}.statement-list{border-top-color:#ffffff2d}.statement-row{border-bottom-color:#ffffff2d}.statement-row span{color:#d3b071}.statement-row p{font-size:18px;color:#edf6f4}
 .library-heading{max-width:1240px}.source-grid{gap:16px;margin-top:40px}.source-card{min-height:220px;padding:20px;border:1px solid var(--line);border-radius:12px;background:#ffffffb0}.source-card:hover{border-color:#a8c9bb}.source-card .source-type{color:var(--green)}.source-card h3{font-size:17px;margin:12px 0 8px}.source-card p{font-size:13px;color:var(--muted);line-height:1.8}.source-meta{color:var(--muted)}.source-empty{border-color:#cbd8cf;background:#fafcf9}
 .team-layout{max-width:1240px}.team-panel{border-color:var(--line)}.team-live{color:#428c68}.team-metric strong{color:var(--navy)}.team-footnote{color:var(--muted)}.legacy-band{max-width:1240px;padding:45px 30px;background:#fff}.legacy-band strong{font-size:20px}.site-footer{max-width:1240px;padding:35px 30px 50px;background:var(--paper);border-top:1px solid var(--line);color:var(--muted)}.site-footer strong{color:var(--ink)}
-@media(max-width:833px){.global-nav{padding:18px 20px}.mobile-menu{top:70px}.tile-dark,.tile-light,.tile-pearl{padding:55px 20px}.hero{padding-top:35px;padding-bottom:55px}.hero-visual{padding:22px;border-radius:16px}.method-grid{margin-top:35px}.legacy-band{padding:35px 20px}}
+/* Keep the bridge theme from overriding the small-screen layout. */
+@media(max-width:1068px){
+  .statement-section{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:833px){
+  .global-nav{padding:18px 20px}
+  .mobile-menu{position:static;top:auto}
+  .tile-dark,.tile-light,.tile-pearl{padding:55px 20px}
+  .hero{grid-template-columns:minmax(0,1fr);gap:32px;padding-top:35px;padding-bottom:55px}
+  .hero-copy,.hero-visual,.hero-actions{width:100%;max-width:100%}
+  .hero-visual{max-width:420px;margin-top:0;padding:22px;border-radius:16px}
+  .statement-section{display:grid;grid-template-columns:minmax(0,1fr);gap:28px}
+  .statement-list{margin-top:0}
+  .method-grid{margin-top:35px}
+  .legacy-band{padding:35px 20px}
+}
