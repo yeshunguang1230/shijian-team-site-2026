@@ -8,7 +8,7 @@
   <title>观史｜把历史读成可以验证的理解</title>
   <link rel="stylesheet" href="观史.css">
   <link rel="stylesheet" href="观史-responsive.css">
-  <link rel="stylesheet" href="观史-bridge.css">
+  <link rel="stylesheet" href="观史-bridge.css?v=20260927-2">
 </head>
 <body>
   <header class="global-nav">
@@ -41,7 +41,8 @@
           <a class="button primary" href="史鉴智能体.html">进入问史工作台 <span aria-hidden="true">↗</span></a>
           <a class="button dark-outline" href="#method">查看学习路径</a>
         </div>
-        <p class="hero-status"><span class="status-dot" id="statusDot"></span><span id="statusText">正在检查云端资料与服务状态…</span></p>
+        <p class="hero-status" aria-live="polite"><span class="status-dot" id="statusDot" aria-hidden="true"></span><span id="statusText">正在检查云端资料与服务状态…</span></p>
+        <button class="button light-outline status-retry" id="retryServices" type="button" hidden>重新检查连接</button>
       </div>
       <div class="hero-visual" aria-label="观史学习路径视觉示意">
         <div class="visual-label">THE OBSERVATION INDEX <b>01</b></div>
@@ -110,7 +111,7 @@
         </div>
         <a class="button light-outline" href="史鉴智能体.html#kb">查看完整资料库 <span aria-hidden="true">↗</span></a>
       </div>
-      <div class="source-grid" id="publicSources" aria-live="polite">
+      <div class="source-grid" id="publicSources" aria-live="polite" aria-busy="true">
         <div class="source-empty">正在读取公开资料…</div>
       </div>
     </section>
@@ -124,7 +125,7 @@
           <a class="button primary" id="teamEntry" href="login.html">进入成员后台 <span aria-hidden="true">↗</span></a>
         </div>
         <div class="team-panel">
-          <div class="team-panel-top"><span>云端工作区</span><span class="team-live"><i></i> <span id="dbStatus">检查中</span></span></div>
+          <div class="team-panel-top"><span>云端工作区</span><span class="team-live" data-state="loading"><i aria-hidden="true"></i> <span id="dbStatus" aria-live="polite">检查中</span></span></div>
           <div class="team-metric"><strong id="sourceCount">—</strong><span>已发布资料</span></div>
           <div class="team-metric"><strong>3</strong><span>独立成员账号</span></div>
           <div class="team-metric"><strong>1</strong><span>共享版本记录</span></div>
@@ -144,6 +145,6 @@
     <div class="footer-links"><a href="观史团队网站.html">首页</a><a href="史鉴使用说明.html">使用说明</a><a href="login.html">成员登录</a><a href="史鉴团队网站.html">史鉴旧版</a></div>
     <small>公开资料与 AI 输出都需要回到来源核验。</small>
   </footer>
-  <script type="module" src="观史.js"></script>
+  <script type="module" src="观史.js?v=20260927-2"></script>
 </body>
 </html>
