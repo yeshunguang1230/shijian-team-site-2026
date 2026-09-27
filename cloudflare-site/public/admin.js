@@ -1,6 +1,7 @@
 import {api,whoAmI,arrayOf,$,esc,message} from './site.js';
 import {createDraftStore} from './workspace-draft.js';
 import {buildFeedbackSummary} from './feedback-export.js';
+import {LOGOUT_WARNING} from './logout-notice.js';
 const state={user:null,sources:[],feedback:[],feedbackReadAt:null,members:[],source:null,newSourceId:null,dirty:false,loaded:new Set(),busy:false,importing:false,feedbackBusy:false,settingsBusy:false,settingsDirty:false,settingsRevision:null,feedbackId:null,sync:null,syncBusy:false,lastSync:null,drafts:null,draftTimer:null,syncTimer:null,leaving:false};
 const views={overview:['工作概览','共同维护资料，让每个版本更可靠。'],sources:['共享史料','从文档到证据：检查来源，保存草稿，核验后发布。'],feedback:['团队建议','把想法变成清楚的要求，把改进过程记录下来。'],members:['团队成员','三个独立账号，同一个共同维护的工作区。'],settings:['规则设置','让智能体的回答边界与项目版本始终清楚。']};
 const sourceKeys=['title','author','date','period','locator','content','reliability'];
@@ -137,6 +138,7 @@ $('#settingsForm').addEventListener('input',()=>{state.settingsDirty=true});
 $('#settingsForm').onsubmit=async event=>{event.preventDefault();if(state.settingsBusy)return;const form=event.currentTarget;const button=form.querySelector('button');state.settingsBusy=true;button.disabled=true;lockForm(form,true);try{const saved=await request('/api/settings',{method:'POST',body:JSON.stringify({version:form.elements.version.value.trim(),system_prompt:form.elements.system_prompt.value.trim(),revision:state.settingsRevision})});state.settingsRevision=saved.revision;state.settingsDirty=false;$('#settingsConflict').hidden=true;message($('#settingsMessage'),'规则与项目版本已保存到云端。')}catch(error){if(error.status===409)$('#settingsConflict').hidden=false;message($('#settingsMessage'),error.status===409?'规则保存未完成：队友已更新规则。你的输入仍保留，请载入并合并最新版本。':error.message,true)}finally{state.settingsBusy=false;button.disabled=false;lockForm(form,false)}};
 $('#reloadSettings').onclick=async()=>{if(state.settingsBusy)return;if(state.settingsDirty&&!confirm('载入云端新规则会替换当前输入。请先复制要保留的内容，再继续。'))return;try{await loadSettings();message($('#settingsMessage'),'已载入云端最新规则。')}catch(error){message($('#settingsMessage'),error.message,true)}};
 function feedbackHasInput(){const fields=$('#feedbackForm').elements;return ['title','scenario','desired','evidence','acceptance'].some(key=>fields?.[key]?.value?.trim())}
+function logoutUrl({reason,cleared}={}){const params=new URLSearchParams();if(reason)params.set('reason',reason);if(cleared===false)params.set('notice','local-draft-cleanup');const query=params.toString();return 'login.html'+(query?'?'+query:'')}
 function endLocalSession(url='login.html'){
   state.leaving=true;clearTimeout(state.draftTimer);clearInterval(state.syncTimer);
   state.dirty=false;state.settingsDirty=false;state.busy=false;state.importing=false;state.feedbackBusy=false;state.settingsBusy=false;
@@ -147,10 +149,10 @@ function endLocalSession(url='login.html'){
   $('#adminApp').hidden=true;$('#authLoading').hidden=false;$('#authLoading').textContent='已退出登录，正在返回登录页…';
   location.replace(url);
 }
-$('#logout').onclick=async()=>{if(sourcePending()||state.feedbackBusy||state.settingsBusy)return;if((state.dirty||state.settingsDirty||feedbackHasInput()||(state.drafts?.list().length||0)>0)&&!confirm('退出会清除当前账号的本机恢复稿，未保存输入也会离开。请确认重要内容已存入云端，确定退出吗？'))return;try{await api('/api/auth/logout',{method:'POST',body:'{}'});state.leaving=true;clearTimeout(state.draftTimer);const cleared=state.drafts?.clear();endLocalSession('login.html'+(cleared===false?'?notice=local-draft-cleanup':''))}catch(error){message($('#globalMessage'),error.message,true)}};
+$('#logout').onclick=async()=>{if(sourcePending()||state.feedbackBusy||state.settingsBusy)return;if(!confirm(LOGOUT_WARNING))return;try{await api('/api/auth/logout',{method:'POST',body:'{}'});state.leaving=true;clearTimeout(state.draftTimer);const cleared=state.drafts?.clear();endLocalSession(logoutUrl({cleared}))}catch(error){message($('#globalMessage'),error.message,true)}};
 $('#checkSync').onclick=()=>checkSync(true);
 window.addEventListener('beforeunload',event=>{if(state.leaving)return;flushDraft();if(state.dirty||sourcePending()||state.settingsDirty||feedbackHasInput()||state.feedbackBusy||state.settingsBusy){event.preventDefault();event.returnValue=''}});
-window.addEventListener('storage',event=>{if(state.user&&event.key===state.drafts?.logoutKey&&event.newValue){state.leaving=true;clearTimeout(state.draftTimer);state.drafts.clear({broadcast:false});endLocalSession()}});
+window.addEventListener('storage',event=>{if(state.user&&event.key===state.drafts?.logoutKey&&event.newValue){state.leaving=true;clearTimeout(state.draftTimer);const cleared=state.drafts.clear({broadcast:false});endLocalSession(logoutUrl({reason:'other-tab-logout',cleared}))}});
 window.addEventListener('hashchange',navigate);window.addEventListener('pageshow',event=>{if(event.persisted)location.reload()});
 window.addEventListener('focus',()=>checkSync());window.addEventListener('online',()=>checkSync());window.addEventListener('offline',()=>{flushDraft();syncStatus('当前离线 · 输入尚未同步，请恢复连接后保存',true)});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)flushDraft();else checkSync()});
