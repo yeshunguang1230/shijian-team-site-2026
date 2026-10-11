@@ -4,3 +4,33 @@
 *.sqlite3
 *.log
 __pycache__/
+
+# Keep root-level delivery documents out of the public website repository.
+/*.md
+!/README.md
+/*.docx
+/*.pdf
+/*.txt
+!/DEPLOY_NOTES.txt
+!/runtime.txt
+
+# Internal reports, local assistant state and private working materials.
+**/private/
+**/private_archive/
+**/outputs/
+**/.codex/
+**/.claude/
+**/.dsh/
+**/docs/验收记录*.md
+**/*执行记录*.md
+**/*评测包*.md
+**/*评测包*.json
+
+# Credentials belong in backend Secrets or ignored local configuration.
+.env
+.env.*
+.dev.vars*
+*.pem
+*.key
+*credentials*
+*seed*.sql
